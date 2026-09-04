@@ -17,6 +17,19 @@ const store = {
     localStorage.setItem(key, value);
     return { key, value };
   },
+  /* Private browsing (older Safari/Firefox) and "block all site data"
+     settings can make localStorage exist but throw on every call, so a
+     real read/write round-trip is the only reliable availability check. */
+  isAvailable() {
+    try {
+      const probe = "__familyRegister_probe__";
+      localStorage.setItem(probe, "1");
+      localStorage.removeItem(probe);
+      return true;
+    } catch {
+      return false;
+    }
+  },
 };
 
 /* ---------------- data helpers ---------------- */
@@ -373,6 +386,9 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
+      if (!store.isAvailable()) {
+        say("Private browsing or a blocked-storage setting means changes won't be saved.");
+      }
       try {
         const r = await store.get(STORE_KEY);
         if (r?.value) {
@@ -383,13 +399,17 @@ export default function App() {
       } catch (e) { /* nothing saved yet */ }
       setLoaded(true);
     })();
-  }, []);
+  }, [say]);
 
   useEffect(() => {
     if (!loaded) return;
     const t = setTimeout(() => {
       store.set(STORE_KEY, JSON.stringify({ people, familyName }))
-        .catch(() => say("Couldn't save — the register may be too large."));
+        .catch((e) => say(
+          e?.name === "QuotaExceededError"
+            ? "Couldn't save — the register may be too large. Try removing a large photo."
+            : "Couldn't save — private browsing or blocked storage may be preventing it."
+        ));
     }, 400);
     return () => clearTimeout(t);
   }, [people, familyName, loaded, say]);
