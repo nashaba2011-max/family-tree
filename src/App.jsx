@@ -47,9 +47,9 @@ const store = {
 /* ---------------- data helpers ---------------- */
 
 const makeId = () => "p" + Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-3);
-const fullName = (p) => `${p.firstName}${p.lastName ? " " + p.lastName : ""}`.trim();
+const fullName = (p) => [p.name, p.fatherName, p.grandfatherName].filter(Boolean).join(" ");
 const years = (p) => (!p.birthYear && !p.deathYear ? "لا توجد تواريخ مسجَّلة" : `${p.birthYear || "؟"} – ${p.deathYear || "حتى الآن"}`);
-const initials = (p) => ((p.firstName || "")[0] || "") + ((p.lastName || "")[0] || "");
+const initials = (p) => ((p.name || "")[0] || "") + ((p.fatherName || "")[0] || "");
 const uniq = (a) => Array.from(new Set(a));
 
 /* Arabic number agreement: 0 -> "لا يوجد"، 1 -> singular، 2 -> dual، 3-10 -> plural، 11+ -> singular (تمييز) */
@@ -64,8 +64,13 @@ function countPhrase(n, singular, dual, plural) {
 function normalize(p) {
   return {
     id: p.id || makeId(),
-    firstName: p.firstName || "",
-    lastName: p.lastName || "",
+    /* name/fatherName fall back to the older firstName/lastName fields so
+       registers saved before this change still display correctly. */
+    name: p.name || p.firstName || "",
+    fatherName: p.fatherName || p.lastName || "",
+    grandfatherName: p.grandfatherName || "",
+    motherName: p.motherName || "",
+    maternalGrandfatherName: p.maternalGrandfatherName || "",
     birthYear: p.birthYear || "",
     deathYear: p.deathYear || "",
     notes: p.notes || "",
@@ -945,6 +950,13 @@ function Sheet({ person, people, byId, onClose, onPick, onAdd, onEdit, onFocus, 
           </div>
           <button className="fr-ib" onClick={onClose} aria-label="إغلاق"><X size={19} /></button>
         </div>
+        {(person.motherName || person.maternalGrandfatherName) && (
+          <p className="fr-notes">
+            {person.motherName && `الأم: ${person.motherName}`}
+            {person.motherName && person.maternalGrandfatherName && " — "}
+            {person.maternalGrandfatherName && `جد الأم: ${person.maternalGrandfatherName}`}
+          </p>
+        )}
         {person.notes && <p className="fr-notes">{person.notes}</p>}
 
         <Group label="الوالدان" list={person.parentIds.map((id) => byId[id]).filter(Boolean)} onPick={onPick}
@@ -1000,8 +1012,11 @@ function Dialog({ modal, people, onClose, onSave, onLink, say }) {
   const p = modal.person;
 
   const [f, setF] = useState({
-    firstName: isEdit ? p.firstName : "",
-    lastName: isEdit ? p.lastName : "",
+    name: isEdit ? p.name : "",
+    fatherName: isEdit ? p.fatherName : "",
+    grandfatherName: isEdit ? p.grandfatherName : "",
+    motherName: isEdit ? p.motherName : "",
+    maternalGrandfatherName: isEdit ? p.maternalGrandfatherName : "",
     birthYear: isEdit ? p.birthYear : "",
     deathYear: isEdit ? p.deathYear : "",
     notes: isEdit ? p.notes : "",
@@ -1032,11 +1047,12 @@ function Dialog({ modal, people, onClose, onSave, onLink, say }) {
   }
 
   function submitPerson() {
-    if (!f.firstName.trim()) { say("الاسم الأول مطلوب."); return; }
+    if (!f.name.trim()) { say("الاسم مطلوب."); return; }
     onSave({
       editId: isEdit ? p.id : null,
       fields: {
-        firstName: f.firstName.trim(), lastName: f.lastName.trim(),
+        name: f.name.trim(), fatherName: f.fatherName.trim(), grandfatherName: f.grandfatherName.trim(),
+        motherName: f.motherName.trim(), maternalGrandfatherName: f.maternalGrandfatherName.trim(),
         birthYear: f.birthYear.trim(), deathYear: f.deathYear.trim(),
         notes: f.notes.trim(), photo: f.photo,
       },
@@ -1098,8 +1114,15 @@ function Dialog({ modal, people, onClose, onSave, onLink, say }) {
             </div>
 
             <div className="fr-row">
-              <div className="fr-field"><label>الاسم الأول</label><input value={f.firstName} onChange={set("firstName")} autoFocus /></div>
-              <div className="fr-field"><label>اللقب</label><input value={f.lastName} onChange={set("lastName")} /></div>
+              <div className="fr-field"><label>الاسم</label><input value={f.name} onChange={set("name")} autoFocus /></div>
+              <div className="fr-field"><label>اسم الأب</label><input value={f.fatherName} onChange={set("fatherName")} /></div>
+            </div>
+            <div className="fr-row">
+              <div className="fr-field"><label>اسم الجد</label><input value={f.grandfatherName} onChange={set("grandfatherName")} /></div>
+              <div className="fr-field"><label>اسم الأم</label><input value={f.motherName} onChange={set("motherName")} /></div>
+            </div>
+            <div className="fr-row">
+              <div className="fr-field"><label>اسم أب الأم (جد الأم)</label><input value={f.maternalGrandfatherName} onChange={set("maternalGrandfatherName")} /></div>
             </div>
             <div className="fr-row">
               <div className="fr-field"><label>الميلاد</label><input value={f.birthYear} onChange={set("birthYear")} placeholder="1958" inputMode="numeric" /></div>
