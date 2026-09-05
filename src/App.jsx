@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import {
   Plus, X, Search, Trash2, Pencil, GitBranch, Users2, ZoomIn, ZoomOut,
-  Maximize2, Link2, Download, Upload, Camera, Crosshair, ListTree, ChevronLeft,
+  Maximize2, Link2, Download, Upload, Camera, Crosshair, ListTree, ChevronRight,
 } from "lucide-react";
 
 const STORE_KEY = "familyRegister:v2";
@@ -36,9 +36,18 @@ const store = {
 
 const makeId = () => "p" + Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-3);
 const fullName = (p) => `${p.firstName}${p.lastName ? " " + p.lastName : ""}`.trim();
-const years = (p) => (!p.birthYear && !p.deathYear ? "Dates unrecorded" : `${p.birthYear || "?"} – ${p.deathYear || "present"}`);
+const years = (p) => (!p.birthYear && !p.deathYear ? "لا توجد تواريخ مسجَّلة" : `${p.birthYear || "؟"} – ${p.deathYear || "حتى الآن"}`);
 const initials = (p) => ((p.firstName || "")[0] || "") + ((p.lastName || "")[0] || "");
 const uniq = (a) => Array.from(new Set(a));
+
+/* Arabic number agreement: 0 -> "لا يوجد"، 1 -> singular، 2 -> dual، 3-10 -> plural، 11+ -> singular (تمييز) */
+function countPhrase(n, singular, dual, plural) {
+  if (n === 0) return `لا يوجد ${plural}`;
+  if (n === 1) return `${singular} واحد`;
+  if (n === 2) return dual;
+  if (n >= 3 && n <= 10) return `${n} ${plural}`;
+  return `${n} ${singular}`;
+}
 
 function normalize(p) {
   return {
@@ -97,18 +106,37 @@ function ancestorsOf(id, effParents) {
   return out;
 }
 
-const ordinal = (n) => {
-  const s = ["th", "st", "nd", "rd"], v = n % 100;
-  return `${n}${s[(v - 20) % 10] || s[v] || s[0]}`;
+/* Arabic relationship labels. The data model has no gender field, so
+   ambiguous terms are given as neutral "X or Y" pairs, matching the
+   original English app's own approach (e.g. "aunt or uncle"). */
+const ordinalAr = (n) => {
+  const words = ["", "الأولى", "الثانية", "الثالثة", "الرابعة", "الخامسة", "السادسة", "السابعة", "الثامنة", "التاسعة", "العاشرة"];
+  return words[n] || `رقم ${n}`;
 };
-const great = (n) => (n > 0 ? "great-".repeat(n) : "");
-const ancLabel = (d) => (d === 1 ? "parent" : `${great(d - 2)}grandparent`);
-const descLabel = (d) => (d === 1 ? "child" : `${great(d - 2)}grandchild`);
+const ancLabel = (d) => {
+  if (d === 1) return "أحد الوالدين";
+  if (d === 2) return "الجد أو الجدة";
+  return `أحد الأجداد (الجيل ${d})`;
+};
+const descLabel = (d) => {
+  if (d === 1) return "أحد الأبناء";
+  if (d === 2) return "أحد الأحفاد";
+  return `أحد الأحفاد (الجيل ${d})`;
+};
+const niblingLabel = (db) => (db === 2 ? "ابن/ابنة الأخ أو الأخت" : `أحد نسل الأخ أو الأخت (الجيل ${db})`);
+const auntUncleLabel = (da) => (da === 2 ? "العم/العمة أو الخال/الخالة" : `أحد أقارب جيل الإخوة (الدرجة ${da})`);
+const cousinLabel = (deg, removed) => {
+  const base = `ابن/ابنة عم أو خال من الدرجة ${ordinalAr(deg)}`;
+  if (removed === 0) return base;
+  if (removed === 1) return `${base}، بإزاحة جيل واحد`;
+  if (removed === 2) return `${base}، بإزاحة جيلين`;
+  return `${base}، بإزاحة ${removed} أجيال`;
+};
 
 function bloodRelation(aId, bId, effParents, groupOf) {
   if (aId === bId) return null;
   if (groupOf(aId) === groupOf(bId) && (effParents[aId] || []).length === 0) {
-    return { label: "sibling", path: [aId, bId] };
+    return { label: "أخ أو أخت", path: [aId, bId] };
   }
   const A = ancestorsOf(aId, effParents), B = ancestorsOf(bId, effParents);
   let best = null;
@@ -123,13 +151,12 @@ function bloodRelation(aId, bId, effParents, groupOf) {
   let label;
   if (da === 0) label = descLabel(db);
   else if (db === 0) label = ancLabel(da);
-  else if (da === 1 && db === 1) label = "sibling";
-  else if (da === 1) label = `${great(db - 2)}niece or nephew`;
-  else if (db === 1) label = `${great(da - 2)}aunt or uncle`;
+  else if (da === 1 && db === 1) label = "أخ أو أخت";
+  else if (da === 1) label = niblingLabel(db);
+  else if (db === 1) label = auntUncleLabel(da);
   else {
     const deg = Math.min(da, db) - 1, rem = Math.abs(da - db);
-    const removed = rem === 0 ? "" : rem === 1 ? ", once removed" : rem === 2 ? ", twice removed" : `, ${rem} times removed`;
-    label = `${ordinal(deg)} cousin${removed}`;
+    label = cousinLabel(deg, rem);
   }
   return { label, path: [...pa, ...pb.slice(0, -1).reverse()] };
 }
@@ -142,15 +169,15 @@ function computeRelationship(aId, bId, people) {
 
   const blood = bloodRelation(aId, bId, eff, groupOf);
   if (blood) return { label: blood.label, path: blood.path.map((id) => byId[id]) };
-  if (a.spouseIds.includes(bId)) return { label: "spouse", path: [a, b] };
+  if (a.spouseIds.includes(bId)) return { label: "زوج أو زوجة", path: [a, b] };
 
   for (const sid of a.spouseIds) {
     const r = byId[sid] && bloodRelation(sid, bId, eff, groupOf);
-    if (r) return { label: `${r.label}-in-law`, path: [a, ...r.path.map((id) => byId[id])] };
+    if (r) return { label: `${r.label} بالمصاهرة`, path: [a, ...r.path.map((id) => byId[id])] };
   }
   for (const sid of b.spouseIds) {
     const r = byId[sid] && bloodRelation(aId, sid, eff, groupOf);
-    if (r) return { label: `${r.label}-in-law`, path: [...r.path.map((id) => byId[id]), b] };
+    if (r) return { label: `${r.label} بالمصاهرة`, path: [...r.path.map((id) => byId[id]), b] };
   }
   return { label: null, path: [a, b] };
 }
@@ -164,18 +191,18 @@ function isAncestor(candidateId, ofId, people) {
 
 /** type 'parent' means: aId is the parent of bId */
 function linkPeople(people, type, aId, bId) {
-  if (!aId || !bId || aId === bId) return { error: "Pick two different people." };
+  if (!aId || !bId || aId === bId) return { error: "اختر شخصين مختلفين." };
   const byId = Object.fromEntries(people.map((p) => [p.id, p]));
-  if (!byId[aId] || !byId[bId]) return { error: "Those entries no longer exist." };
+  if (!byId[aId] || !byId[bId]) return { error: "هذان الشخصان لم يعودا موجودين في السجل." };
 
   if (type === "parent") {
-    if (byId[bId].parentIds.includes(aId)) return { error: `${fullName(byId[aId])} is already recorded as a parent.` };
-    if (isAncestor(bId, aId, people)) return { error: "That would make someone their own ancestor." };
-    if (byId[bId].parentIds.length >= 2) return { error: `${fullName(byId[bId])} already has two parents. Remove one first.` };
+    if (byId[bId].parentIds.includes(aId)) return { error: `${fullName(byId[aId])} مسجَّل بالفعل كأحد الوالدين.` };
+    if (isAncestor(bId, aId, people)) return { error: "هذا سيجعل الشخص جدًا لنفسه — وهو أمر غير ممكن." };
+    if (byId[bId].parentIds.length >= 2) return { error: `${fullName(byId[bId])} لديه بالفعل والدان مسجَّلان. احذف أحدهما أولًا.` };
     return { people: people.map((p) => (p.id === bId ? { ...p, parentIds: uniq([...p.parentIds, aId]) } : p)) };
   }
   if (type === "spouse") {
-    if (byId[aId].spouseIds.includes(bId)) return { error: "They're already recorded as married." };
+    if (byId[aId].spouseIds.includes(bId)) return { error: "هما مسجَّلان بالفعل كزوجين." };
     return {
       people: people.map((p) => {
         if (p.id === aId) return { ...p, spouseIds: uniq([...p.spouseIds, bId]) };
@@ -186,7 +213,7 @@ function linkPeople(people, type, aId, bId) {
   }
   if (type === "sibling") {
     const shared = uniq([...byId[aId].parentIds, ...byId[bId].parentIds]);
-    if (shared.length > 2) return { error: "Too many different parents recorded to link them as siblings." };
+    if (shared.length > 2) return { error: "عدد الوالدين المسجَّلين يمنع ربطهما كأخوين." };
     return {
       people: people.map((p) => {
         if (p.id === aId) return { ...p, parentIds: shared, siblingIds: uniq([...p.siblingIds, bId]) };
@@ -195,7 +222,7 @@ function linkPeople(people, type, aId, bId) {
       }),
     };
   }
-  return { error: "Unknown relationship." };
+  return { error: "نوع علاقة غير معروف." };
 }
 
 function unlink(people, type, aId, bId) {
@@ -367,7 +394,7 @@ function readPhoto(file) {
 
 export default function App() {
   const [people, setPeople] = useState([]);
-  const [familyName, setFamilyName] = useState("Our family");
+  const [familyName, setFamilyName] = useState("عائلتنا");
   const [loaded, setLoaded] = useState(false);
   const [view, setView] = useState("tree");
   const [selectedId, setSelectedId] = useState(null);
@@ -387,7 +414,7 @@ export default function App() {
   useEffect(() => {
     (async () => {
       if (!store.isAvailable()) {
-        say("Private browsing or a blocked-storage setting means changes won't be saved.");
+        say("التصفح الخاص أو إعداد يحظر تخزين بيانات الموقع يعني أن التعديلات لن تُحفظ.");
       }
       try {
         const r = await store.get(STORE_KEY);
@@ -407,8 +434,8 @@ export default function App() {
       store.set(STORE_KEY, JSON.stringify({ people, familyName }))
         .catch((e) => say(
           e?.name === "QuotaExceededError"
-            ? "Couldn't save — the register may be too large. Try removing a large photo."
-            : "Couldn't save — private browsing or blocked storage may be preventing it."
+            ? "تعذّر الحفظ — قد يكون السجل كبيرًا جدًا. جرّب حذف صورة كبيرة الحجم."
+            : "تعذّر الحفظ — قد يكون السبب التصفح الخاص أو حظر التخزين."
         ));
     }, 400);
     return () => clearTimeout(t);
@@ -458,7 +485,7 @@ export default function App() {
     const res = linkPeople(people, type, a, b);
     if (res.error) { say(res.error); return false; }
     setPeople(res.people);
-    say("Linked.");
+    say("تم الربط.");
     return true;
   }
 
@@ -494,46 +521,46 @@ export default function App() {
       setPeople(d.people.map(normalize));
       if (d.familyName) setFamilyName(d.familyName);
       setSelectedId(null); setFocusId(null);
-      say(`Loaded ${d.people.length} entries.`);
+      say(`تم تحميل ${countPhrase(d.people.length, "سجل", "سجلّان", "سجلات")}.`);
     } catch {
-      say("That file isn't a register export.");
+      say("هذا الملف ليس نسخة مُصدَّرة من السجل.");
     }
   }
 
   const relationResult = relA && relB && relA !== relB ? computeRelationship(relA, relB, people) : null;
 
   return (
-    <div className="fr">
+    <div className="fr" dir="rtl" lang="ar">
       <style>{CSS}</style>
 
       <header className="fr-head">
         <div className="fr-head-in">
           {focusId ? (
             <button className="fr-back" onClick={() => setFocusId(null)}>
-              <ChevronLeft size={16} /> Whole tree
+              <ChevronRight size={16} /> الشجرة كاملة
             </button>
           ) : (
             <div className="fr-title">
-              <input value={familyName} onChange={(e) => setFamilyName(e.target.value)} aria-label="Family name" />
-              <p>{people.length} {people.length === 1 ? "entry" : "entries"}</p>
+              <input value={familyName} onChange={(e) => setFamilyName(e.target.value)} aria-label="اسم العائلة" />
+              <p>{countPhrase(people.length, "فرد", "فردان", "أفراد")}</p>
             </div>
           )}
           <div className="fr-head-tools">
-            <button className="fr-ib" title="Save a copy" onClick={exportJson}><Download size={17} /></button>
-            <button className="fr-ib" title="Load a saved copy" onClick={() => importRef.current?.click()}><Upload size={17} /></button>
+            <button className="fr-ib" title="حفظ نسخة" onClick={exportJson}><Download size={17} /></button>
+            <button className="fr-ib" title="تحميل نسخة محفوظة" onClick={() => importRef.current?.click()}><Upload size={17} /></button>
             <input ref={importRef} type="file" accept="application/json" hidden
               onChange={(e) => { const f = e.target.files?.[0]; if (f) importJson(f); e.target.value = ""; }} />
-            <button className="fr-ib" title="Link two people" disabled={people.length < 2}
+            <button className="fr-ib" title="ربط شخصين" disabled={people.length < 2}
               onClick={() => setModal({ mode: "link" })}><Link2 size={17} /></button>
           </div>
         </div>
-        {focusId && byId[focusId] && <p className="fr-focus-note">Showing the line of {fullName(byId[focusId])}</p>}
+        {focusId && byId[focusId] && <p className="fr-focus-note">عرض نسب {fullName(byId[focusId])}</p>}
       </header>
 
       <nav className="fr-nav">
-        <button className={view === "tree" ? "on" : ""} onClick={() => setView("tree")}><GitBranch size={19} /><span>Tree</span></button>
-        <button className={view === "list" ? "on" : ""} onClick={() => setView("list")}><ListTree size={19} /><span>Register</span></button>
-        <button className={view === "connect" ? "on" : ""} onClick={() => setView("connect")}><Users2 size={19} /><span>Connect</span></button>
+        <button className={view === "tree" ? "on" : ""} onClick={() => setView("tree")}><GitBranch size={19} /><span>الشجرة</span></button>
+        <button className={view === "list" ? "on" : ""} onClick={() => setView("list")}><ListTree size={19} /><span>السجل</span></button>
+        <button className={view === "connect" ? "on" : ""} onClick={() => setView("connect")}><Users2 size={19} /><span>القرابة</span></button>
       </nav>
 
       <main className="fr-main">
@@ -546,10 +573,10 @@ export default function App() {
           <div className="fr-list">
             <div className="fr-search">
               <Search size={15} />
-              <input placeholder="Search the register" value={query} onChange={(e) => setQuery(e.target.value)} />
+              <input placeholder="ابحث في السجل" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
             {filtered.length === 0 ? (
-              <p className="fr-muted">{people.length ? "No matches." : "No entries yet."}</p>
+              <p className="fr-muted">{people.length ? "لا توجد نتائج مطابقة." : "لا يوجد أي سجلات بعد."}</p>
             ) : (
               <ul>
                 {filtered.map((p) => (
@@ -568,30 +595,30 @@ export default function App() {
 
         {view === "connect" && (
           <div className="fr-connect">
-            <h2>How are they related?</h2>
-            <p className="fr-muted">Pick two people to trace the line between them.</p>
+            <h2>ما صلة القرابة بينهما؟</h2>
+            <p className="fr-muted">اختر شخصين لتتبّع صلة القرابة بينهما.</p>
             <select value={relA || ""} onChange={(e) => setRelA(e.target.value || null)}>
-              <option value="">Select a person…</option>
+              <option value="">اختر شخصًا…</option>
               {people.map((p) => <option key={p.id} value={p.id}>{fullName(p)}</option>)}
             </select>
-            <div className="fr-and">and</div>
+            <div className="fr-and">و</div>
             <select value={relB || ""} onChange={(e) => setRelB(e.target.value || null)}>
-              <option value="">Select a person…</option>
+              <option value="">اختر شخصًا…</option>
               {people.map((p) => <option key={p.id} value={p.id}>{fullName(p)}</option>)}
             </select>
             {relationResult && (
               <div className="fr-result">
                 {relationResult.label ? (
                   <>
-                    <p className="rel">{fullName(byId[relB])} is {fullName(byId[relA])}'s <b>{relationResult.label}</b></p>
+                    <p className="rel">صلة قرابة {fullName(byId[relB])} بـ {fullName(byId[relA])}: <b>{relationResult.label}</b></p>
                     <p className="path">
                       {relationResult.path.map((p, i) => (
-                        <span key={p.id + i}>{fullName(p)}{i < relationResult.path.length - 1 ? " → " : ""}</span>
+                        <span key={p.id + i}>{fullName(p)}{i < relationResult.path.length - 1 ? " ← " : ""}</span>
                       ))}
                     </p>
                   </>
                 ) : (
-                  <p className="rel">No recorded line connects these two yet.</p>
+                  <p className="rel">لا توجد صلة قرابة مسجَّلة بينهما حتى الآن.</p>
                 )}
               </div>
             )}
@@ -600,7 +627,7 @@ export default function App() {
       </main>
 
       {view === "tree" && people.length > 0 && (
-        <button className="fr-fab" aria-label="Add family member"
+        <button className="fr-fab" aria-label="إضافة فرد للعائلة"
           onClick={() => setModal({ mode: "add", relationType: "child", relatedId: selectedId })}>
           <Plus size={22} />
         </button>
@@ -697,9 +724,9 @@ function TreeCanvas({ layout, selectedId, onSelect, empty, onAddFirst }) {
   if (empty) {
     return (
       <div className="fr-blank">
-        <h2>Begin the register</h2>
-        <p>Add the first person in your family. Everyone else branches out from there.</p>
-        <button className="fr-primary" onClick={onAddFirst}><Plus size={16} /> Add first member</button>
+        <h2>ابدأ السجل</h2>
+        <p>أضف أول فرد في عائلتك، وستتفرّع الشجرة من هناك تلقائيًا.</p>
+        <button className="fr-primary" onClick={onAddFirst}><Plus size={16} /> إضافة أول فرد</button>
       </div>
     );
   }
@@ -738,9 +765,9 @@ function TreeCanvas({ layout, selectedId, onSelect, empty, onAddFirst }) {
         </div>
       </div>
       <div className="fr-zoom">
-        <button onClick={() => zoomCenter(1.2)} aria-label="Zoom in"><ZoomIn size={17} /></button>
-        <button onClick={() => zoomCenter(0.83)} aria-label="Zoom out"><ZoomOut size={17} /></button>
-        <button onClick={fit} aria-label="Fit tree to screen"><Maximize2 size={16} /></button>
+        <button onClick={() => zoomCenter(1.2)} aria-label="تكبير"><ZoomIn size={17} /></button>
+        <button onClick={() => zoomCenter(0.83)} aria-label="تصغير"><ZoomOut size={17} /></button>
+        <button onClick={fit} aria-label="ملاءمة الشجرة للشاشة"><Maximize2 size={16} /></button>
       </div>
     </div>
   );
@@ -762,29 +789,29 @@ function Sheet({ person, people, byId, onClose, onPick, onAdd, onEdit, onFocus, 
             <h3>{fullName(person)}</h3>
             <p>{years(person)}</p>
           </div>
-          <button className="fr-ib" onClick={onClose} aria-label="Close"><X size={19} /></button>
+          <button className="fr-ib" onClick={onClose} aria-label="إغلاق"><X size={19} /></button>
         </div>
         {person.notes && <p className="fr-notes">{person.notes}</p>}
 
-        <Group label="Parents" list={person.parentIds.map((id) => byId[id]).filter(Boolean)} onPick={onPick}
+        <Group label="الوالدان" list={person.parentIds.map((id) => byId[id]).filter(Boolean)} onPick={onPick}
           onUnlink={(o) => onUnlink("parent", o.id, person.id)} />
-        <Group label="Spouse" list={person.spouseIds.map((id) => byId[id]).filter(Boolean)} onPick={onPick}
+        <Group label="الزوج/الزوجة" list={person.spouseIds.map((id) => byId[id]).filter(Boolean)} onPick={onPick}
           onUnlink={(o) => onUnlink("spouse", person.id, o.id)} />
-        <Group label="Children" list={children} onPick={onPick}
+        <Group label="الأبناء" list={children} onPick={onPick}
           onUnlink={(o) => onUnlink("parent", person.id, o.id)} />
-        <Group label="Siblings" list={sibs} onPick={onPick}
+        <Group label="الإخوة" list={sibs} onPick={onPick}
           onUnlink={(o) => onUnlink("sibling", person.id, o.id)} />
 
         <div className="fr-add-row">
-          <button onClick={() => onAdd("parent")}><Plus size={14} /> Parent</button>
-          <button onClick={() => onAdd("spouse")}><Plus size={14} /> Spouse</button>
-          <button onClick={() => onAdd("child")}><Plus size={14} /> Child</button>
-          <button onClick={() => onAdd("sibling")}><Plus size={14} /> Sibling</button>
+          <button onClick={() => onAdd("parent")}><Plus size={14} /> والد/والدة</button>
+          <button onClick={() => onAdd("spouse")}><Plus size={14} /> زوج/زوجة</button>
+          <button onClick={() => onAdd("child")}><Plus size={14} /> ابن/ابنة</button>
+          <button onClick={() => onAdd("sibling")}><Plus size={14} /> أخ/أخت</button>
         </div>
         <div className="fr-add-row">
-          <button onClick={onFocus}><Crosshair size={14} /> Show only this line</button>
-          <button onClick={onEdit}><Pencil size={14} /> Edit</button>
-          <button className="danger" onClick={onRemove}><Trash2 size={14} /> Remove</button>
+          <button onClick={onFocus}><Crosshair size={14} /> عرض هذا الفرع فقط</button>
+          <button onClick={onEdit}><Pencil size={14} /> تعديل</button>
+          <button className="danger" onClick={onRemove}><Trash2 size={14} /> حذف</button>
         </div>
       </div>
     </div>
@@ -799,14 +826,19 @@ function Group({ label, list, onPick, onUnlink }) {
       {list.map((p) => (
         <span key={p.id} className="fr-chip">
           <span onClick={() => onPick(p.id)}>{fullName(p)}</span>
-          <button onClick={() => onUnlink(p)} aria-label={`Unlink ${fullName(p)}`}><X size={12} /></button>
+          <button onClick={() => onUnlink(p)} aria-label={`فك الربط مع ${fullName(p)}`}><X size={12} /></button>
         </span>
       ))}
     </div>
   );
 }
 
-const REL_LABEL = { parent: "is the parent of", child: "is the child of", spouse: "is married to", sibling: "is a sibling of" };
+const REL_LABEL = {
+  parent: "هو أحد الوالدين لـ",
+  child: "هو أحد الأبناء لـ",
+  spouse: "متزوّج/ة من",
+  sibling: "أخ أو أخت لـ",
+};
 
 function Dialog({ modal, people, onClose, onSave, onLink, say }) {
   const isEdit = modal.mode === "edit";
@@ -842,11 +874,11 @@ function Dialog({ modal, people, onClose, onSave, onLink, say }) {
     e.target.value = "";
     if (!file) return;
     try { const photo = await readPhoto(file); setF((s) => ({ ...s, photo })); }
-    catch { say("Couldn't read that image."); }
+    catch { say("تعذّرت قراءة هذه الصورة."); }
   }
 
   function submitPerson() {
-    if (!f.firstName.trim()) { say("A first name is needed."); return; }
+    if (!f.firstName.trim()) { say("الاسم الأول مطلوب."); return; }
     onSave({
       editId: isEdit ? p.id : null,
       fields: {
@@ -869,33 +901,33 @@ function Dialog({ modal, people, onClose, onSave, onLink, say }) {
     <div className="fr-modal-bg" onClick={onClose}>
       <div className="fr-modal" onClick={(e) => e.stopPropagation()}>
         <div className="fr-modal-head">
-          <h3>{isLink ? "Link two people" : isEdit ? "Edit entry" : "Add family member"}</h3>
-          <button className="fr-ib" onClick={onClose} aria-label="Close"><X size={20} /></button>
+          <h3>{isLink ? "ربط شخصين" : isEdit ? "تعديل البيانات" : "إضافة فرد للعائلة"}</h3>
+          <button className="fr-ib" onClick={onClose} aria-label="إغلاق"><X size={20} /></button>
         </div>
 
         {isLink ? (
           <>
             <div className="fr-field">
-              <label>Person</label>
+              <label>الشخص</label>
               <select value={linkA} onChange={(e) => setLinkA(e.target.value)}>
                 {people.map((x) => <option key={x.id} value={x.id}>{fullName(x)}</option>)}
               </select>
             </div>
             <div className="fr-field">
-              <label>Relationship</label>
+              <label>نوع العلاقة</label>
               <select value={linkType} onChange={(e) => setLinkType(e.target.value)}>
                 {Object.entries(REL_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
               </select>
             </div>
             <div className="fr-field">
-              <label>Person</label>
+              <label>الشخص</label>
               <select value={linkB} onChange={(e) => setLinkB(e.target.value)}>
                 {people.map((x) => <option key={x.id} value={x.id}>{fullName(x)}</option>)}
               </select>
             </div>
             <div className="fr-modal-acts">
-              <button className="fr-secondary" onClick={onClose}>Cancel</button>
-              <button className="fr-primary" onClick={submitLink}>Save link</button>
+              <button className="fr-secondary" onClick={onClose}>إلغاء</button>
+              <button className="fr-primary" onClick={submitLink}>حفظ الربط</button>
             </div>
           </>
         ) : (
@@ -904,42 +936,42 @@ function Dialog({ modal, people, onClose, onSave, onLink, say }) {
               <Avatar p={f} size={62} />
               <div>
                 <button className="fr-secondary sm" onClick={() => fileRef.current?.click()}>
-                  <Camera size={14} /> {f.photo ? "Change photo" : "Add photo"}
+                  <Camera size={14} /> {f.photo ? "تغيير الصورة" : "إضافة صورة"}
                 </button>
-                {f.photo && <button className="fr-linkbtn" onClick={() => setF((s) => ({ ...s, photo: null }))}>Remove photo</button>}
+                {f.photo && <button className="fr-linkbtn" onClick={() => setF((s) => ({ ...s, photo: null }))}>حذف الصورة</button>}
                 <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickPhoto} />
               </div>
             </div>
 
             <div className="fr-row">
-              <div className="fr-field"><label>First name</label><input value={f.firstName} onChange={set("firstName")} autoFocus /></div>
-              <div className="fr-field"><label>Last name</label><input value={f.lastName} onChange={set("lastName")} /></div>
+              <div className="fr-field"><label>الاسم الأول</label><input value={f.firstName} onChange={set("firstName")} autoFocus /></div>
+              <div className="fr-field"><label>اللقب</label><input value={f.lastName} onChange={set("lastName")} /></div>
             </div>
             <div className="fr-row">
-              <div className="fr-field"><label>Born</label><input value={f.birthYear} onChange={set("birthYear")} placeholder="1958" inputMode="numeric" /></div>
-              <div className="fr-field"><label>Died</label><input value={f.deathYear} onChange={set("deathYear")} placeholder="Blank if living" /></div>
+              <div className="fr-field"><label>الميلاد</label><input value={f.birthYear} onChange={set("birthYear")} placeholder="1958" inputMode="numeric" /></div>
+              <div className="fr-field"><label>الوفاة</label><input value={f.deathYear} onChange={set("deathYear")} placeholder="اتركه فارغًا إذا كان على قيد الحياة" /></div>
             </div>
-            <div className="fr-field"><label>Notes</label><textarea value={f.notes} onChange={set("notes")} placeholder="Anything worth remembering" /></div>
+            <div className="fr-field"><label>ملاحظات</label><textarea value={f.notes} onChange={set("notes")} placeholder="أي شيء يستحق التذكّر" /></div>
 
             {!isEdit && people.length > 0 && (
               <div className="fr-relbox">
                 <div className="fr-field">
-                  <label>This person</label>
+                  <label>هذا الشخص</label>
                   <select value={relationType} onChange={(e) => setRelationType(e.target.value)}>
                     {Object.entries(REL_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                   </select>
                 </div>
                 <div className="fr-field">
-                  <label>Who?</label>
+                  <label>مع من؟</label>
                   <select value={relatedId} onChange={(e) => setRelatedId(e.target.value)}>
                     {people.map((x) => <option key={x.id} value={x.id}>{fullName(x)}</option>)}
                   </select>
                 </div>
                 {spouseOptions.length > 0 && (
                   <div className="fr-field">
-                    <label>Second parent</label>
+                    <label>الوالد الثاني</label>
                     <select value={secondParentId} onChange={(e) => setSecondParentId(e.target.value)}>
-                      <option value="">Not recorded</option>
+                      <option value="">غير مسجَّل</option>
                       {spouseOptions.map((x) => <option key={x.id} value={x.id}>{fullName(x)}</option>)}
                     </select>
                   </div>
@@ -948,8 +980,8 @@ function Dialog({ modal, people, onClose, onSave, onLink, say }) {
             )}
 
             <div className="fr-modal-acts">
-              <button className="fr-secondary" onClick={onClose}>Cancel</button>
-              <button className="fr-primary" onClick={submitPerson}>{isEdit ? "Save changes" : "Save entry"}</button>
+              <button className="fr-secondary" onClick={onClose}>إلغاء</button>
+              <button className="fr-primary" onClick={submitPerson}>{isEdit ? "حفظ التعديلات" : "حفظ البيانات"}</button>
             </div>
           </>
         )}
@@ -961,13 +993,13 @@ function Dialog({ modal, people, onClose, onSave, onLink, say }) {
 /* ---------------- styles ---------------- */
 
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Inter:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Markazi+Text:wght@400;500;600;700&family=Tajawal:wght@400;500;700&display=swap');
 
 .fr {
   --paper:#EFE7D6; --paper2:#E4DAC3; --card:#F8F3E7;
   --ink:#241C14; --soft:#6E6454; --rule:#C9BC9C;
   --green:#2F4A3C; --green2:#1D2E25; --gold:#A67C2E; --gold2:#C79A4B; --wine:#7A2E3B;
-  font-family:'Inter',system-ui,sans-serif; background:var(--paper); color:var(--ink);
+  font-family:'Tajawal',system-ui,sans-serif; background:var(--paper); color:var(--ink);
   position:absolute; inset:0; display:flex; flex-direction:column; overflow:hidden;
   -webkit-tap-highlight-color:transparent;
 }
@@ -977,17 +1009,17 @@ const CSS = `
 
 .fr-head{background:var(--green2); color:var(--paper); border-bottom:3px solid var(--gold); flex-shrink:0}
 .fr-head-in{display:flex; align-items:center; gap:12px; padding:12px 14px; max-width:1200px; margin:0 auto; width:100%}
-.fr-title input{font-family:'Newsreader',serif; font-style:italic; font-size:23px; color:var(--paper);
+.fr-title input{font-family:'Markazi Text',serif; font-size:25px; color:var(--paper);
   background:none; border:none; border-bottom:1px dashed rgba(239,231,214,.3); padding:0 2px 2px; width:100%; max-width:230px}
 .fr-title input:focus{outline:none; border-bottom-color:var(--gold2)}
 .fr-title p{margin:3px 0 0; font-size:12px; color:rgba(239,231,214,.6)}
-.fr-head-tools{margin-left:auto; display:flex; gap:2px}
+.fr-head-tools{margin-inline-start:auto; display:flex; gap:2px}
 .fr-ib{background:none; border:none; color:inherit; opacity:.85; padding:9px; border-radius:4px; display:flex}
 .fr-ib:hover{opacity:1; background:rgba(255,255,255,.08)}
 .fr-ib:disabled{opacity:.3}
 .fr-back{background:none; border:1px solid rgba(239,231,214,.3); color:var(--paper); border-radius:4px;
   padding:8px 12px; font-size:13px; display:flex; align-items:center; gap:4px}
-.fr-focus-note{margin:0; padding:0 14px 10px; font-size:12px; color:var(--gold2); font-family:'Newsreader',serif; font-style:italic}
+.fr-focus-note{margin:0; padding:0 14px 10px; font-size:12px; color:var(--gold2); font-family:'Markazi Text',serif}
 
 .fr-main{flex:1; min-height:0; display:flex; position:relative}
 
@@ -1004,23 +1036,23 @@ const CSS = `
   display:flex; align-items:center; gap:9px; padding:0 10px; overflow:hidden}
 .fr-node.on{border-color:var(--gold); box-shadow:0 0 0 2px rgba(166,124,46,.28)}
 .fr-node-txt{min-width:0}
-.fr-node .nm{font-family:'Newsreader',serif; font-size:15px; font-weight:500; line-height:1.2;
+.fr-node .nm{font-family:'Markazi Text',serif; font-size:16px; font-weight:500; line-height:1.2;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
 .fr-node .yr{font-size:11px; color:var(--soft); margin-top:2px}
 
 .fr-av{border-radius:50%; object-fit:cover; flex-shrink:0; border:1px solid var(--rule)}
 .fr-av-ph{background:var(--green); color:var(--paper); display:flex; align-items:center; justify-content:center;
-  font-family:'Newsreader',serif; border-color:var(--green)}
+  font-family:'Markazi Text',serif; border-color:var(--green)}
 
-.fr-zoom{position:absolute; right:12px; bottom:16px; display:flex; flex-direction:column;
+.fr-zoom{position:absolute; inset-inline-end:12px; bottom:16px; display:flex; flex-direction:column;
   background:var(--card); border:1px solid var(--rule); border-radius:5px; overflow:hidden; z-index:15}
 .fr-zoom button{background:none; border:none; padding:11px; color:var(--ink); display:flex}
 .fr-zoom button+button{border-top:1px solid var(--paper2)}
 
-.fr-blank{margin:auto; padding:40px 26px; max-width:340px}
-.fr-blank h2{font-family:'Newsreader',serif; font-weight:500; font-size:25px; margin:0 0 8px}
+.fr-blank{margin:auto; padding:40px 26px; max-width:340px; text-align:center}
+.fr-blank h2{font-family:'Markazi Text',serif; font-weight:500; font-size:26px; margin:0 0 8px}
 .fr-blank p{color:var(--soft); font-size:14px; line-height:1.6; margin:0 0 20px}
-.fr-blank .fr-primary{max-width:220px}
+.fr-blank .fr-primary{max-width:220px; margin:0 auto}
 
 .fr-list{flex:1; overflow-y:auto; padding:14px 14px 30px}
 .fr-search{display:flex; align-items:center; gap:8px; background:var(--card); border:1px solid var(--rule);
@@ -1028,21 +1060,21 @@ const CSS = `
 .fr-search input{border:none; background:none; outline:none; font-family:inherit; font-size:16px; width:100%; color:var(--ink)}
 .fr-list ul{list-style:none; margin:0; padding:0}
 .fr-list li{display:flex; align-items:center; gap:12px; padding:11px 4px; border-bottom:1px solid var(--paper2)}
-.fr-list .nm{font-family:'Newsreader',serif; font-size:17px}
+.fr-list .nm{font-family:'Markazi Text',serif; font-size:18px}
 .fr-list .yr{font-size:12px; color:var(--soft); margin-top:1px}
 
 .fr-connect{flex:1; overflow-y:auto; padding:22px 18px 40px; max-width:560px; margin:0 auto; width:100%}
-.fr-connect h2{font-family:'Newsreader',serif; font-weight:500; font-size:23px; margin:0 0 4px}
+.fr-connect h2{font-family:'Markazi Text',serif; font-weight:500; font-size:24px; margin:0 0 4px}
 .fr-connect select{width:100%; font-family:inherit; font-size:16px; padding:13px 11px; margin-top:14px;
   border:1px solid var(--rule); border-radius:4px; background:var(--card); color:var(--ink)}
-.fr-and{font-family:'Newsreader',serif; font-style:italic; color:var(--soft); text-align:center; margin-top:12px}
-.fr-result{margin-top:22px; background:var(--card); border:1px solid var(--rule); border-left:3px solid var(--gold);
+.fr-and{font-family:'Markazi Text',serif; color:var(--soft); text-align:center; margin-top:12px}
+.fr-result{margin-top:22px; background:var(--card); border:1px solid var(--rule); border-inline-start:3px solid var(--gold);
   border-radius:4px; padding:18px}
-.fr-result .rel{font-family:'Newsreader',serif; font-size:20px; margin:0 0 10px; line-height:1.35}
-.fr-result .rel b{font-weight:600; font-style:italic}
+.fr-result .rel{font-family:'Markazi Text',serif; font-size:21px; margin:0 0 10px; line-height:1.35}
+.fr-result .rel b{font-weight:600}
 .fr-result .path{font-size:12.5px; color:var(--soft); line-height:1.8; margin:0}
 
-.fr-fab{position:absolute; right:16px; bottom:88px; width:56px; height:56px; border-radius:50%; border:none;
+.fr-fab{position:absolute; inset-inline-end:16px; bottom:88px; width:56px; height:56px; border-radius:50%; border:none;
   background:var(--gold); color:var(--green2); display:flex; align-items:center; justify-content:center;
   box-shadow:0 4px 14px rgba(29,46,37,.3); z-index:20}
 
@@ -1056,14 +1088,14 @@ const CSS = `
   padding:8px 18px 26px; border-top:2px solid var(--gold)}
 .fr-grip{width:38px; height:4px; background:var(--rule); border-radius:2px; margin:0 auto 12px}
 .fr-sheet-head{display:flex; align-items:center; gap:12px}
-.fr-sheet-head h3{font-family:'Newsreader',serif; font-weight:500; font-size:21px; margin:0}
+.fr-sheet-head h3{font-family:'Markazi Text',serif; font-weight:500; font-size:22px; margin:0}
 .fr-sheet-head p{margin:2px 0 0; font-size:12.5px; color:var(--soft)}
-.fr-sheet-head .fr-ib{margin-left:auto; color:var(--soft)}
+.fr-sheet-head .fr-ib{margin-inline-start:auto; color:var(--soft)}
 .fr-notes{font-size:13.5px; line-height:1.6; margin:14px 0 4px}
 .fr-group{margin-top:14px}
 .fr-group .lb{font-size:11.5px; color:var(--soft); margin-bottom:6px}
 .fr-chip{display:inline-flex; align-items:center; gap:2px; background:var(--paper2); border-radius:3px;
-  font-family:'Newsreader',serif; font-size:14.5px; padding:5px 4px 5px 10px; margin:0 6px 6px 0}
+  font-family:'Markazi Text',serif; font-size:15px; padding-block:5px; padding-inline:10px 4px; margin-block-end:6px; margin-inline-end:6px}
 .fr-chip>span{cursor:pointer}
 .fr-chip button{background:none; border:none; color:var(--soft); padding:3px; display:flex; border-radius:2px}
 .fr-chip button:hover{color:var(--wine)}
@@ -1076,7 +1108,7 @@ const CSS = `
 .fr-modal{background:var(--paper); width:100%; max-height:92%; overflow-y:auto; border-radius:14px 14px 0 0;
   padding:16px 18px 24px; border-top:2px solid var(--gold)}
 .fr-modal-head{display:flex; justify-content:space-between; align-items:center; margin-bottom:14px}
-.fr-modal-head h3{font-family:'Newsreader',serif; font-weight:500; font-size:20px; margin:0}
+.fr-modal-head h3{font-family:'Markazi Text',serif; font-weight:500; font-size:21px; margin:0}
 .fr-modal-head .fr-ib{color:var(--soft)}
 .fr-photo-row{display:flex; align-items:center; gap:14px; margin-bottom:16px}
 .fr-field{margin-bottom:12px; flex:1; min-width:0}
@@ -1096,18 +1128,18 @@ const CSS = `
 
 .fr-toast{position:absolute; left:50%; transform:translateX(-50%); bottom:24px; z-index:70;
   background:var(--green2); color:var(--paper); font-size:13.5px; padding:11px 16px; border-radius:6px;
-  max-width:88%; box-shadow:0 4px 16px rgba(0,0,0,.25)}
+  max-width:88%; box-shadow:0 4px 16px rgba(0,0,0,.25); text-align:center}
 
 @media (min-width:820px){
   .fr-nav{justify-content:center; gap:8px; padding:2px}
   .fr-nav button{flex:0 0 auto; flex-direction:row; padding:12px 20px; font-size:13.5px; gap:7px}
   .fr-sheet-wrap{align-items:stretch; justify-content:flex-end; background:none; pointer-events:none}
   .fr-sheet{pointer-events:auto; width:330px; max-height:none; border-radius:0; border-top:none;
-    border-left:1px solid var(--rule); padding:20px 20px 30px; box-shadow:-6px 0 20px rgba(29,46,37,.12)}
+    border-inline-start:1px solid var(--rule); padding:20px 20px 30px; box-shadow:-6px 0 20px rgba(29,46,37,.12)}
   .fr-grip{display:none}
   .fr-modal-bg{align-items:center; justify-content:center; padding:24px}
   .fr-modal{max-width:440px; border-radius:6px; border:1px solid var(--rule); border-top:2px solid var(--gold)}
-  .fr-fab{bottom:24px; right:auto; left:24px}
-  .fr-zoom{bottom:24px; right:16px}
+  .fr-fab{bottom:24px; inset-inline-end:auto; inset-inline-start:24px}
+  .fr-zoom{bottom:24px; inset-inline-end:16px}
 }
 `;

@@ -1,6 +1,8 @@
 {
-  "name": "Family Register",
-  "short_name": "Family",
+  "name": "سجل العائلة",
+  "short_name": "العائلة",
+  "lang": "ar",
+  "dir": "rtl",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#EFE7D6",
