@@ -1,0 +1,13 @@
+{
+  "name": "المخزون اليومي",
+  "short_name": "المخزون",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F2EFE6",
+  "theme_color": "#1F3A52",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
