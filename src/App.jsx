@@ -394,7 +394,7 @@ function readPhoto(file) {
 
 export default function App() {
   const [people, setPeople] = useState([]);
-  const [familyName, setFamilyName] = useState("عائلتنا");
+  const [familyName, setFamilyName] = useState("عائلة النشابة");
   const [loaded, setLoaded] = useState(false);
   const [view, setView] = useState("tree");
   const [selectedId, setSelectedId] = useState(null);
