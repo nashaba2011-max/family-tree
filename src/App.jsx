@@ -2,9 +2,21 @@ import React, { useState, useMemo, useRef, useEffect, useCallback } from "react"
 import {
   Plus, X, Search, Trash2, Pencil, GitBranch, Users2, ZoomIn, ZoomOut,
   Maximize2, Link2, Download, Upload, Camera, Crosshair, ListTree, ChevronRight,
+  LogOut, ShieldCheck,
 } from "lucide-react";
 
 const STORE_KEY = "familyRegister:v2";
+const AUTH_KEY = "familyRegisterAuth:v1";
+/* Client-side only — no backend. This is an access gate against casual
+   opening on a shared device, not real security: anyone with devtools can
+   read this constant or edit localStorage directly. */
+const ADMIN_PASSWORD = "123456";
+
+async function sha256Hex(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+const hashPassword = (name, password) => sha256Hex(`${name.trim().toLowerCase()}::${password}`);
 
 /* Browser storage. Kept behind a tiny async wrapper so the app code
    doesn't care where the register actually lives. */
@@ -404,12 +416,32 @@ export default function App() {
   const [relA, setRelA] = useState(null);
   const [relB, setRelB] = useState(null);
   const [toast, setToast] = useState(null);
+  const [auth, setAuth] = useState({ users: [], session: null });
+  const [authLoaded, setAuthLoaded] = useState(false);
   const importRef = useRef(null);
 
   const say = useCallback((msg) => {
     setToast(msg);
     setTimeout(() => setToast(null), 3200);
   }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await store.get(AUTH_KEY);
+        if (r?.value) {
+          const d = JSON.parse(r.value);
+          setAuth({ users: Array.isArray(d.users) ? d.users : [], session: d.session || null });
+        }
+      } catch { /* nothing saved yet */ }
+      setAuthLoaded(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!authLoaded) return;
+    store.set(AUTH_KEY, JSON.stringify(auth)).catch(() => {});
+  }, [auth, authLoaded]);
 
   useEffect(() => {
     (async () => {
@@ -529,6 +561,12 @@ export default function App() {
 
   const relationResult = relA && relB && relA !== relB ? computeRelationship(relA, relB, people) : null;
 
+  if (!authLoaded) return null;
+
+  if (!auth.session) {
+    return <AuthGate auth={auth} setAuth={setAuth} familyName={familyName} />;
+  }
+
   return (
     <div className="fr" dir="rtl" lang="ar">
       <style>{CSS}</style>
@@ -542,7 +580,7 @@ export default function App() {
           ) : (
             <div className="fr-title">
               <input value={familyName} onChange={(e) => setFamilyName(e.target.value)} aria-label="اسم العائلة" />
-              <p>{countPhrase(people.length, "فرد", "فردان", "أفراد")}</p>
+              <p>{`أهلًا ${auth.session.name} • ${countPhrase(people.length, "فرد", "فردان", "أفراد")}`}</p>
             </div>
           )}
           <div className="fr-head-tools">
@@ -552,6 +590,10 @@ export default function App() {
               onChange={(e) => { const f = e.target.files?.[0]; if (f) importJson(f); e.target.value = ""; }} />
             <button className="fr-ib" title="ربط شخصين" disabled={people.length < 2}
               onClick={() => setModal({ mode: "link" })}><Link2 size={17} /></button>
+            {auth.session.isAdmin && (
+              <button className="fr-ib" title="إدارة المستخدمين" onClick={() => setModal({ mode: "users" })}><ShieldCheck size={17} /></button>
+            )}
+            <button className="fr-ib" title="تسجيل الخروج" onClick={() => setAuth((a) => ({ ...a, session: null }))}><LogOut size={17} /></button>
           </div>
         </div>
         {focusId && byId[focusId] && <p className="fr-focus-note">عرض نسب {fullName(byId[focusId])}</p>}
@@ -646,8 +688,120 @@ export default function App() {
         />
       )}
 
-      {modal && <Dialog modal={modal} people={people} onClose={() => setModal(null)} onSave={savePerson} onLink={doLink} say={say} />}
+      {modal && modal.mode === "users" ? (
+        <UsersPanel users={auth.users} onClose={() => setModal(null)}
+          onRemove={(name) => setAuth((a) => ({ ...a, users: a.users.filter((u) => u.name !== name) }))} />
+      ) : (
+        modal && <Dialog modal={modal} people={people} onClose={() => setModal(null)} onSave={savePerson} onLink={doLink} say={say} />
+      )}
       {toast && <div className="fr-toast">{toast}</div>}
+    </div>
+  );
+}
+
+/* ---------------- auth ---------------- */
+
+function AuthGate({ auth, setAuth, familyName }) {
+  const [tab, setTab] = useState("login");
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    setError("");
+    const n = name.trim();
+
+    if (tab === "admin") {
+      if (password !== ADMIN_PASSWORD) { setError("كلمة مرور المسؤول غير صحيحة."); return; }
+      setAuth((a) => ({ ...a, session: { name: n || "المسؤول", isAdmin: true } }));
+      return;
+    }
+    if (!n) { setError("الاسم مطلوب."); return; }
+
+    if (tab === "register") {
+      if (password.length < 4) { setError("كلمة المرور يجب أن تكون 4 أحرف على الأقل."); return; }
+      if (password !== confirm) { setError("كلمتا المرور غير متطابقتين."); return; }
+      if (auth.users.some((u) => u.name.toLowerCase() === n.toLowerCase())) {
+        setError("هذا الاسم مسجَّل بالفعل. جرّب تسجيل الدخول بدلًا من ذلك."); return;
+      }
+      setBusy(true);
+      const hash = await hashPassword(n, password);
+      setBusy(false);
+      setAuth((a) => ({ ...a, users: [...a.users, { name: n, hash }], session: { name: n, isAdmin: false } }));
+      return;
+    }
+
+    const user = auth.users.find((u) => u.name.toLowerCase() === n.toLowerCase());
+    if (!user) { setError("لا يوجد مستخدم بهذا الاسم. سجّل حسابًا جديدًا."); return; }
+    setBusy(true);
+    const hash = await hashPassword(n, password);
+    setBusy(false);
+    if (hash !== user.hash) { setError("كلمة المرور غير صحيحة."); return; }
+    setAuth((a) => ({ ...a, session: { name: user.name, isAdmin: false } }));
+  }
+
+  return (
+    <div className="fr fr-auth" dir="rtl" lang="ar">
+      <style>{CSS}</style>
+      <div className="fr-auth-card">
+        <h1>{familyName || "السجل العائلي"}</h1>
+        <p className="fr-muted">سجّل اسمك لدخول السجل العائلي.</p>
+
+        <div className="fr-auth-tabs">
+          <button type="button" className={tab === "login" ? "on" : ""} onClick={() => { setTab("login"); setError(""); }}>تسجيل الدخول</button>
+          <button type="button" className={tab === "register" ? "on" : ""} onClick={() => { setTab("register"); setError(""); }}>حساب جديد</button>
+          <button type="button" className={tab === "admin" ? "on" : ""} onClick={() => { setTab("admin"); setError(""); }}>دخول كمسؤول</button>
+        </div>
+
+        <form onSubmit={submit}>
+          <div className="fr-field">
+            <label>{tab === "admin" ? "اسمك (اختياري)" : "الاسم"}</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+          </div>
+          <div className="fr-field">
+            <label>{tab === "admin" ? "كلمة مرور المسؤول" : "كلمة المرور"}</label>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          </div>
+          {tab === "register" && (
+            <div className="fr-field">
+              <label>تأكيد كلمة المرور</label>
+              <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+            </div>
+          )}
+          {error && <p className="fr-auth-error">{error}</p>}
+          <button className="fr-primary" type="submit" disabled={busy}>
+            {tab === "register" ? "إنشاء الحساب" : "دخول"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function UsersPanel({ users, onClose, onRemove }) {
+  return (
+    <div className="fr-modal-bg" onClick={onClose}>
+      <div className="fr-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="fr-modal-head">
+          <h3>إدارة المستخدمين</h3>
+          <button className="fr-ib" onClick={onClose} aria-label="إغلاق"><X size={20} /></button>
+        </div>
+        {users.length === 0 ? (
+          <p className="fr-muted">لا يوجد مستخدمون مسجَّلون بعد.</p>
+        ) : (
+          <div className="fr-group">
+            {users.map((u) => (
+              <span key={u.name} className="fr-chip">
+                <span>{u.name}</span>
+                <button onClick={() => onRemove(u.name)} aria-label={`حذف ${u.name}`}><X size={12} /></button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1129,6 +1283,17 @@ const CSS = `
 .fr-toast{position:absolute; left:50%; transform:translateX(-50%); bottom:24px; z-index:70;
   background:var(--green2); color:var(--paper); font-size:13.5px; padding:11px 16px; border-radius:6px;
   max-width:88%; box-shadow:0 4px 16px rgba(0,0,0,.25); text-align:center}
+
+.fr-auth{align-items:center; justify-content:center; padding:24px}
+.fr-auth-card{background:var(--card); border:1px solid var(--rule); border-top:3px solid var(--gold);
+  border-radius:8px; padding:28px 24px; max-width:360px; width:100%; text-align:center}
+.fr-auth-card h1{font-family:'Markazi Text',serif; font-weight:500; font-size:27px; margin:0 0 6px}
+.fr-auth-tabs{display:flex; gap:4px; margin:18px 0 14px; background:var(--paper2); border-radius:6px; padding:3px}
+.fr-auth-tabs button{flex:1; background:none; border:none; padding:9px 4px; font-size:12px; border-radius:4px; color:var(--soft)}
+.fr-auth-tabs button.on{background:var(--card); color:var(--ink); font-weight:600; box-shadow:0 1px 3px rgba(0,0,0,.1)}
+.fr-auth-card form{text-align:right}
+.fr-auth-card .fr-primary{width:100%; margin-top:6px}
+.fr-auth-error{color:var(--wine); font-size:12.5px; margin:-4px 0 12px}
 
 @media (min-width:820px){
   .fr-nav{justify-content:center; gap:8px; padding:2px}
